@@ -26,7 +26,7 @@ class OllamaModel:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model: str = "qwen3",
+        model: str = "qwen2.5:3b",
         timeout: int = 30,
     ) -> None:
         self.base_url = base_url
