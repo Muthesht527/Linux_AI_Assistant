@@ -14,6 +14,10 @@ Each plugin tool should define:
 - `parameter_schema`
 - `execute`
 
+Plugins may also define `dependencies` as a list of import names. Missing
+dependencies are reported by validation and prevent the plugin from being loaded
+as a valid tool.
+
 Example:
 
 ```python
@@ -37,4 +41,10 @@ Inspect plugins with:
 ```bash
 python3 main.py plugins list
 python3 main.py plugins reload
+python3 main.py plugins validate
+python3 main.py plugins info example
+python3 main.py plugins disable example
+python3 main.py plugins enable example
 ```
+
+Disabled plugin state is persisted locally in `assistant/cache/plugin_state.json`.

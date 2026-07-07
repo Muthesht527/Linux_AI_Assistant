@@ -7,6 +7,7 @@ from collections.abc import Callable
 from time import perf_counter
 from typing import Any
 
+from assistant.core.production import get_runtime
 from assistant.diagnostics.collectors import (
     BatteryCollector,
     CPUCollector,
@@ -137,12 +138,21 @@ class DiagnosticsManager:
 
     def _collect(self, name: str, collector: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         started_at = perf_counter()
+        runtime = get_runtime()
+        cache_key = f"diagnostics:{name}"
+        cached = runtime.cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
         try:
             data = collector()
             elapsed = perf_counter() - started_at
+            runtime.statistics.performance.record(elapsed)
             self.logger.info("diagnostics=%s elapsed=%.6f success=True", name, elapsed)
-            return {"name": name, "success": True, "data": data, "elapsed": elapsed}
+            result = {"name": name, "success": True, "data": data, "elapsed": elapsed}
+            runtime.cache.set(cache_key, result)
+            return result
         except Exception as exc:
             elapsed = perf_counter() - started_at
+            runtime.statistics.record_error(f"diagnostics:{name}")
             self.logger.warning("diagnostics=%s elapsed=%.6f error=%s", name, elapsed, exc)
             return {"name": name, "success": False, "data": {}, "elapsed": elapsed, "error": str(exc)}

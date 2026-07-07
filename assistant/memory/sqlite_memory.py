@@ -290,6 +290,33 @@ class MemoryManager:
         self.persistent.set(key, value, namespace)
         return True
 
+    def record_command(self, command: str) -> None:
+        """Remember a frequently used command."""
+        self.database.record_event("command", command)
+        self.remember("frequently_used_commands", self._top_events("command"), "usage")
+
+    def record_folder(self, path: str) -> None:
+        """Remember a frequently accessed folder."""
+        self.database.record_event("folder", path)
+        self.remember("frequently_accessed_folders", self._top_events("folder"), "usage")
+
+    def record_repository(self, path: str) -> None:
+        """Remember a frequently opened repository and recent project."""
+        self.database.record_event("repository", path)
+        self.remember("frequently_opened_repositories", self._top_events("repository"), "usage")
+        self.remember("recent_projects", self._top_events("repository"), "usage")
+
+    def record_language(self, language: str) -> None:
+        """Remember a preferred programming language by observed usage."""
+        self.database.record_event("language", language)
+        self.remember("preferred_programming_languages", self._top_events("language"), "usage")
+
+    def record_model(self, model_name: str) -> None:
+        """Remember the preferred model."""
+        self.remember("preferred_model", model_name, "preferences")
+        self.preferences.set("preferred_model", model_name)
+        self.session.current_model = model_name
+
     def list_memory(self) -> dict[str, Any]:
         """Return session and persistent memory."""
         return {"session": self.session.snapshot(), "persistent": self.persistent.list()}
@@ -311,6 +338,21 @@ class MemoryManager:
     def _is_sensitive(self, key: str) -> bool:
         lowered = key.lower()
         return any(marker.lower() in lowered for marker in self.sensitive_keys)
+
+    def _top_events(self, category: str, limit: int = 10) -> list[str]:
+        prefix = f"{category}:"
+        counts = {
+            key.removeprefix(prefix): count
+            for key, count in self.database.event_counts().items()
+            if key.startswith(prefix)
+        }
+        return [
+            name
+            for name, _count in sorted(
+                counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:limit]
+        ]
 
 
 class SQLiteMemory:

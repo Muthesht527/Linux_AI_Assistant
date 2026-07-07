@@ -149,7 +149,7 @@ Tool Engine diagnostics tools:
 - `network_info`: hostname, interfaces, IP addresses, MAC addresses, gateway,
   and DNS.
 
-The chat loop also supports `/system`, `/cpu`, `/memory`, `/disk`,
+The chat loop also supports `/system`, `/cpu`, `/memory-info`, `/disk`,
 `/processes`, `/services`, `/kernel`, `/network`, and `/hardware`.
 
 ## Coding And Git Assistant
@@ -196,13 +196,22 @@ tokens, secrets, credentials, and keys, are not stored automatically.
 
 The chat loop supports `/memory`, `/memory list`, `/memory clear`,
 `/memory export`, `/memory import`, `/preferences`, `/preferences reset`,
-`/plugins`, `/plugins list`, `/plugins reload`, `/stats`, `/about`, `/version`,
-and `/license`. The diagnostics memory shortcut is `/memory-info`.
+`/plugins`, `/plugins list`, `/plugins reload`, `/plugins enable`,
+`/plugins disable`, `/plugins validate`, `/plugins info`, `/stats`, `/about`,
+`/version`, and `/license`. The diagnostics memory shortcut is `/memory-info`.
 
 Plugin discovery loads `BaseTool` subclasses from `assistant/plugins`, validates
 metadata, tracks enabled state, exposes version and author details, and supports
-reload. Release readiness checks verify packaging files such as README,
+reload. Enabled and disabled plugin state is persisted locally in the cache
+directory. Release readiness checks verify packaging files such as README,
 LICENSE, requirements, and `pyproject.toml`.
+
+Runtime cache is process-local and covers configuration loads, filesystem
+queries, file reads, repository summaries, diagnostics snapshots, Ollama model
+lists, and tool lookups. Stale entries expire automatically and index rebuilds
+invalidate cached filesystem data. Statistics track command usage, tool
+execution, response timing, cache usage, memory usage, plugin activity,
+repository scans, filesystem searches, and errors.
 
 ## Documentation
 

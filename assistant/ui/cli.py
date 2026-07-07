@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from dataclasses import asdict
 from pathlib import Path
 
 import typer
@@ -14,7 +16,12 @@ from assistant.core.bootstrap import build_startup_context, startup_banner
 from assistant.core.conversation_manager import ConversationManager
 from assistant.core.constants import APP_VERSION
 from assistant.core.exceptions import AssistantError
-from assistant.core.production import ApplicationStatistics, ReleaseManager, VersionManager
+from assistant.core.production import (
+    ReleaseManager,
+    VersionManager,
+    configure_runtime_memory,
+    get_runtime,
+)
 from assistant.diagnostics import DiagnosticsConfiguration, DiagnosticsManager
 from assistant.filesystem import FilesystemConfiguration, FilesystemManager
 from assistant.memory import MemoryManager
@@ -29,19 +36,27 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 console = Console()
-statistics = ApplicationStatistics()
+_memory_configured = False
 
 
 def _build_conversation_manager() -> ConversationManager:
     """Create a configured local conversation manager."""
     settings = ConfigLoader().load_settings()
-    return ConversationManager(settings.conversation)
+    manager = ConversationManager(settings.conversation)
+    memory = _build_memory_manager()
+    memory.session.current_model = manager.models.current_model
+    memory.record_model(manager.models.current_model)
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if editor:
+        memory.preferences.set("favourite_editor", editor)
+    return manager
 
 
 def _build_filesystem_manager() -> FilesystemManager:
     """Create a configured filesystem manager."""
     settings = ConfigLoader().load_settings()
     configuration = FilesystemConfiguration(**settings.filesystem.model_dump())
+    _build_memory_manager().session.current_working_directory = str(Path.cwd())
     return FilesystemManager(configuration)
 
 
@@ -55,6 +70,7 @@ def _build_repository_analyzer() -> RepositoryAnalyzer:
     """Create a configured repository analyzer."""
     settings = ConfigLoader().load_settings()
     configuration = ProjectConfiguration(**settings.project.model_dump())
+    _build_memory_manager().session.current_project = str(Path.cwd())
     return RepositoryAnalyzer(configuration)
 
 
@@ -62,17 +78,27 @@ def _build_git_manager() -> GitRepositoryManager:
     """Create a configured read-only Git manager."""
     settings = ConfigLoader().load_settings()
     configuration = ProjectConfiguration(**settings.project.model_dump())
+    _build_memory_manager().session.current_repository = str(Path.cwd())
     return GitRepositoryManager(configuration)
 
 
 def _build_memory_manager() -> MemoryManager:
     """Create a configured memory manager."""
+    global _memory_configured
     settings = ConfigLoader().load_settings()
-    return MemoryManager(
-        db_path=settings.memory.database_path,
-        max_recent_items=settings.memory.max_recent_items,
-        sensitive_keys=settings.memory.sensitive_keys,
-    )
+    if not _memory_configured:
+        configure_runtime_memory(
+            MemoryManager(
+                db_path=settings.memory.database_path,
+                max_recent_items=settings.memory.max_recent_items,
+                sensitive_keys=settings.memory.sensitive_keys,
+            )
+        )
+        _memory_configured = True
+    memory = get_runtime().memory
+    memory.session.current_working_directory = str(Path.cwd())
+    memory.session.current_configuration = settings.model_dump(mode="json")
+    return memory
 
 
 def _build_plugin_manager() -> PluginManager:
@@ -101,6 +127,11 @@ def main(
 ) -> None:
     """Run startup checks when no subcommand is provided."""
     del version
+    if ctx.invoked_subcommand is not None:
+        runtime = get_runtime()
+        runtime.statistics.record_command(ctx.invoked_subcommand)
+        runtime.memory.record_command(ctx.invoked_subcommand)
+        _build_memory_manager()
     if ctx.invoked_subcommand is not None:
         return
     try:
@@ -241,6 +272,7 @@ def files(
     limit: int = typer.Option(50, "--limit", "-n", help="Maximum entries to show."),
 ) -> None:
     """List local files in a directory."""
+    _build_memory_manager().record_folder(str(path.expanduser().resolve()))
     manager = _build_filesystem_manager()
     try:
         data = manager.list_directory(path, limit)
@@ -259,6 +291,7 @@ def search(
     limit: int = typer.Option(50, "--limit", "-n", help="Maximum results."),
 ) -> None:
     """Search indexed files."""
+    get_runtime().statistics.record_filesystem_search(query)
     manager = _build_filesystem_manager()
     if content:
         data = manager.search_content(query, regex=regex, limit=limit)
@@ -273,6 +306,7 @@ def read(
     preview_rows: int = typer.Option(20, "--preview-rows", help="CSV preview rows."),
 ) -> None:
     """Read a supported local file."""
+    _build_memory_manager().session.remember_file(str(path.expanduser().resolve()))
     manager = _build_filesystem_manager()
     try:
         data = manager.read(path, preview_rows)
@@ -291,6 +325,7 @@ def project(
     if command not in {"summary", "/project", "/project summary"}:
         console.print("[red]Unknown project command. Use summary.[/red]")
         raise typer.Exit(code=1)
+    _build_memory_manager().record_repository(str(path.expanduser().resolve()))
     _print_project_summary(_build_repository_analyzer().analyze(path))
 
 
@@ -300,6 +335,7 @@ def git_command(
     path: Path = typer.Argument(Path("."), help="Repository path."),
 ) -> None:
     """Inspect Git repositories without modifying history or remotes."""
+    _build_memory_manager().record_repository(str(path.expanduser().resolve()))
     manager = _build_git_manager()
     if command in {"status", "/git status"}:
         _print_git_status(manager.status(path))
@@ -398,26 +434,70 @@ def preferences_command(
 
 @app.command(name="plugins")
 def plugins_command(
-    command: str = typer.Argument("list", help="Plugin command: list or reload."),
+    command: str = typer.Argument(
+        "list",
+        help="Plugin command: list, reload, enable, disable, validate, or info.",
+    ),
+    name: str | None = typer.Argument(None, help="Plugin name for enable, disable, or info."),
 ) -> None:
     """Inspect auto-discovered plugins."""
     manager = _build_plugin_manager()
+    runtime = get_runtime()
     if command in {"list", "/plugins", "/plugins list"}:
+        runtime.statistics.record_plugin("list")
         _print_plugins(manager.list_metadata())
         return
     if command in {"reload", "/plugins reload"}:
         manager.reload()
+        runtime.statistics.record_plugin("reload")
         console.print("[green]Plugins reloaded.[/green]")
         _print_plugins(manager.list_metadata())
         return
-    console.print("[red]Unknown plugin command. Use list or reload.[/red]")
+    if command == "enable":
+        if not name:
+            console.print("[red]Provide a plugin name to enable.[/red]")
+            raise typer.Exit(code=1)
+        manager.discover()
+        manager.enable(name)
+        runtime.statistics.record_plugin("enable")
+        console.print(f"[green]Plugin enabled: {name}[/green]")
+        return
+    if command == "disable":
+        if not name:
+            console.print("[red]Provide a plugin name to disable.[/red]")
+            raise typer.Exit(code=1)
+        manager.discover()
+        manager.disable(name)
+        runtime.statistics.record_plugin("disable")
+        console.print(f"[green]Plugin disabled: {name}[/green]")
+        return
+    if command == "validate":
+        manager.reload()
+        runtime.statistics.record_plugin("validate")
+        _print_plugins(manager.list_metadata())
+        if manager.errors:
+            console.print(f"[yellow]Plugin issues: {_compact_value(manager.errors)}[/yellow]")
+        return
+    if command == "info":
+        if not name:
+            console.print("[red]Provide a plugin name for info.[/red]")
+            raise typer.Exit(code=1)
+        manager.discover()
+        for plugin in manager.list_metadata():
+            if plugin.name == name:
+                runtime.statistics.record_plugin("info")
+                _print_mapping("Plugin Info", asdict(plugin))
+                return
+        console.print(f"[red]Plugin not found: {name}[/red]")
+        raise typer.Exit(code=1)
+    console.print("[red]Unknown plugin command. Use list, reload, enable, disable, validate, or info.[/red]")
     raise typer.Exit(code=1)
 
 
 @app.command(name="stats")
 def stats_command() -> None:
     """Show process-local application statistics."""
-    _print_mapping("Application Statistics", statistics.snapshot())
+    _print_mapping("Application Statistics", get_runtime().statistics.snapshot())
 
 
 @app.command(name="about")
@@ -482,18 +562,27 @@ def _make_diagnostics_command(action: str):
     return command
 
 
-for _diagnostics_action in (
-    "system", "cpu", "memory", "disk", "processes",
-    "services", "kernel", "network", "hardware",
-):
-    app.command(name=_diagnostics_action)(_make_diagnostics_command(_diagnostics_action))
+for _diagnostics_command_name, _diagnostics_action in {
+    "system": "system",
+    "cpu": "cpu",
+    "memory-info": "memory",
+    "disk": "disk",
+    "processes": "processes",
+    "services": "services",
+    "kernel": "kernel",
+    "network": "network",
+    "hardware": "hardware",
+}.items():
+    app.command(name=_diagnostics_command_name)(_make_diagnostics_command(_diagnostics_action))
 
 
 def _handle_chat_command(manager: ConversationManager, user_input: str) -> bool:
     """Handle slash commands inside the chat loop."""
     if user_input in {"/exit", "exit", "quit"}:
         raise typer.Exit()
-    statistics.record_command(user_input.split(" ", 1)[0])
+    runtime = get_runtime()
+    runtime.statistics.record_command(user_input.split(" ", 1)[0])
+    runtime.memory.record_command(user_input.split(" ", 1)[0])
     if user_input in {"/reset", "/clear", "clear history"}:
         manager.reset()
         console.print("[green]Conversation history cleared.[/green]")
@@ -533,8 +622,39 @@ def _handle_chat_command(manager: ConversationManager, user_input: str) -> bool:
         plugin_manager.reload()
         _print_plugins(plugin_manager.list_metadata())
         return True
+    if user_input.startswith("/plugins enable "):
+        plugin_name = user_input.removeprefix("/plugins enable ").strip()
+        plugin_manager = _build_plugin_manager()
+        plugin_manager.discover()
+        plugin_manager.enable(plugin_name)
+        runtime.statistics.record_plugin("enable")
+        console.print(f"[green]Plugin enabled: {plugin_name}[/green]")
+        return True
+    if user_input.startswith("/plugins disable "):
+        plugin_name = user_input.removeprefix("/plugins disable ").strip()
+        plugin_manager = _build_plugin_manager()
+        plugin_manager.discover()
+        plugin_manager.disable(plugin_name)
+        runtime.statistics.record_plugin("disable")
+        console.print(f"[green]Plugin disabled: {plugin_name}[/green]")
+        return True
+    if user_input == "/plugins validate":
+        plugin_manager = _build_plugin_manager()
+        plugin_manager.reload()
+        _print_plugins(plugin_manager.list_metadata())
+        return True
+    if user_input.startswith("/plugins info "):
+        plugin_name = user_input.removeprefix("/plugins info ").strip()
+        plugin_manager = _build_plugin_manager()
+        plugin_manager.discover()
+        for plugin in plugin_manager.list_metadata():
+            if plugin.name == plugin_name:
+                _print_mapping("Plugin Info", asdict(plugin))
+                return True
+        console.print(f"[red]Plugin not found: {plugin_name}[/red]")
+        return True
     if user_input == "/stats":
-        _print_mapping("Application Statistics", statistics.snapshot())
+        _print_mapping("Application Statistics", get_runtime().statistics.snapshot())
         return True
     if user_input == "/about":
         about_command()
@@ -841,6 +961,7 @@ def _print_plugins(plugins: list[object]) -> None:
     table.add_column("Version")
     table.add_column("Enabled")
     table.add_column("Valid")
+    table.add_column("Missing Dependencies")
     table.add_column("Module")
     for plugin in plugins:
         table.add_row(
@@ -848,6 +969,7 @@ def _print_plugins(plugins: list[object]) -> None:
             str(getattr(plugin, "version", "")),
             str(getattr(plugin, "enabled", "")),
             str(getattr(plugin, "valid", "")),
+            _compact_value(getattr(plugin, "missing_dependencies", [])),
             str(getattr(plugin, "module", "")),
         )
     console.print(table)

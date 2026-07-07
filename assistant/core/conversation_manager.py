@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 
 from assistant.config.settings import ConversationSettings
 from assistant.core.chat_session import ChatSession, TokenUsage
+from assistant.core.production import get_runtime
 from assistant.models.ollama_model import OllamaModel
 from assistant.models.ollama_model import OllamaModelInfo
 
@@ -33,7 +34,14 @@ class ModelManager:
 
     def list_models(self) -> list[OllamaModelInfo]:
         """Return installed Ollama models."""
-        return self.client.list_models()
+        runtime = get_runtime()
+        cache_key = f"models:{getattr(self.client, 'base_url', 'local')}"
+        cached = runtime.cache.get(cache_key)
+        if isinstance(cached, list):
+            return cached
+        models = self.client.list_models()
+        runtime.cache.set(cache_key, models)
+        return models
 
     def switch(self, model_name: str) -> str:
         """Select an installed model by name or untagged base name."""
@@ -122,7 +130,9 @@ class ConversationManager:
 
     def switch_model(self, model_name: str) -> str:
         """Switch to an installed Ollama model."""
-        return self.models.switch(model_name)
+        selected = self.models.switch(model_name)
+        get_runtime().memory.record_model(selected)
+        return selected
 
     def reset(self) -> None:
         """Clear in-session conversation history."""
@@ -143,6 +153,9 @@ class ConversationManager:
 
         response = str(result.get("response", ""))
         self.session.remember_exchange(user_input, response)
+        runtime = get_runtime()
+        runtime.memory.session.remember_conversation("user", user_input)
+        runtime.memory.session.remember_conversation("assistant", response)
         return ChatResult(
             model=self.client.model,
             response=response,
@@ -168,6 +181,9 @@ class ConversationManager:
             return
 
         self.session.remember_exchange(user_input, "".join(collected))
+        runtime = get_runtime()
+        runtime.memory.session.remember_conversation("user", user_input)
+        runtime.memory.session.remember_conversation("assistant", "".join(collected))
 
     def _error_result(self, user_input: str, message: str) -> ChatResult:
         """Build a structured failed chat result."""

@@ -26,6 +26,11 @@ Major packages:
 - `assistant/plugins`: plugin discovery and validation
 - `assistant/ui`: Rich/Typer CLI
 
+Production runtime services live in `assistant/core/production.py`. They provide
+shared process-local cache, statistics, release checks, and the configured
+memory manager. Managers update these services during normal filesystem,
+diagnostics, repository, model, plugin, and tool operations.
+
 ## Testing
 
 ```bash

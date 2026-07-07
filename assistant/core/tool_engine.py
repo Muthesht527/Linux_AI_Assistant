@@ -9,6 +9,7 @@ from pkgutil import iter_modules
 from time import perf_counter
 from typing import Any
 
+from assistant.core.production import get_runtime
 from assistant.core.base_tool import (
     BaseTool,
     PermissionLevel,
@@ -34,22 +35,33 @@ class ToolRegistry:
         if tool.name in self._tools:
             raise ToolException(f"Tool already registered: {tool.name}")
         self._tools[tool.name] = tool
+        get_runtime().cache.invalidate(f"tool:{tool.name}")
 
     def unregister(self, name: str) -> None:
         """Remove a tool from the registry."""
         if name not in self._tools:
             raise ToolException(f"Tool not registered: {name}")
         del self._tools[name]
+        get_runtime().cache.invalidate(f"tool:{name}")
 
     def reload(self, tools: list[BaseTool]) -> None:
         """Replace all registered tools."""
         self._tools = {}
+        get_runtime().cache.invalidate()
         for tool in tools:
             self.register(tool)
 
     def find(self, name: str) -> BaseTool | None:
         """Return a tool by name."""
-        return self._tools.get(name)
+        runtime = get_runtime()
+        cache_key = f"tool:{name}"
+        cached = runtime.cache.get(cache_key)
+        if isinstance(cached, BaseTool):
+            return cached
+        tool = self._tools.get(name)
+        if tool is not None:
+            runtime.cache.set(cache_key, tool)
+        return tool
 
     def list(self) -> list[BaseTool]:
         """Return all registered tools."""
@@ -99,6 +111,7 @@ class ToolExecutor:
     ) -> ToolResult:
         """Run a tool with timeout handling."""
         if not tool.enabled:
+            get_runtime().statistics.record_error(f"tool_disabled:{tool.name}")
             return ToolResult(
                 success=False,
                 message=f"Tool is disabled: {tool.name}",
@@ -112,6 +125,7 @@ class ToolExecutor:
                 future = executor.submit(tool.execute, **arguments)
                 result = future.result(timeout=tool.timeout)
         except TimeoutError:
+            get_runtime().statistics.record_error(f"tool_timeout:{tool.name}")
             return ToolResult(
                 success=False,
                 message=f"Tool timed out after {tool.timeout} seconds",
@@ -120,6 +134,7 @@ class ToolExecutor:
                 error="Tool timeout",
             )
         except Exception as exc:
+            get_runtime().statistics.record_error(f"tool_failed:{tool.name}")
             return ToolResult(
                 success=False,
                 message=f"Tool failed: {tool.name}",
@@ -129,8 +144,13 @@ class ToolExecutor:
             )
 
         if isinstance(result, ToolResult):
+            runtime = get_runtime()
+            runtime.statistics.record_tool(tool.name)
+            runtime.statistics.performance.record(result.execution_time)
+            runtime.memory.session.remember_tool(tool.name)
             return result
         if isinstance(result, dict):
+            get_runtime().statistics.record_tool(tool.name)
             return ToolResult(
                 success="error" not in result,
                 message="Tool executed",
@@ -139,6 +159,7 @@ class ToolExecutor:
                 tool_name=tool.name,
                 error=result.get("error"),
             )
+        get_runtime().statistics.record_tool(tool.name)
         return ToolResult(
             success=True,
             message="Tool executed",

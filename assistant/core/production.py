@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import time
+import resource
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from assistant.core.constants import APP_VERSION
+from assistant.memory import MemoryManager
 
 
 @dataclass(slots=True)
@@ -98,6 +100,9 @@ class ApplicationStatistics:
     commands: Counter[str] = field(default_factory=Counter)
     tools: Counter[str] = field(default_factory=Counter)
     errors: Counter[str] = field(default_factory=Counter)
+    plugins: Counter[str] = field(default_factory=Counter)
+    repositories: Counter[str] = field(default_factory=Counter)
+    filesystem_searches: Counter[str] = field(default_factory=Counter)
     performance: PerformanceMonitor = field(default_factory=PerformanceMonitor)
     cache: CacheManager = field(default_factory=CacheManager)
 
@@ -113,6 +118,18 @@ class ApplicationStatistics:
         """Track one error category."""
         self.errors[name] += 1
 
+    def record_plugin(self, name: str) -> None:
+        """Track one plugin operation."""
+        self.plugins[name] += 1
+
+    def record_repository_scan(self, path: str) -> None:
+        """Track one repository scan."""
+        self.repositories[path] += 1
+
+    def record_filesystem_search(self, query: str) -> None:
+        """Track one filesystem search."""
+        self.filesystem_searches[query] += 1
+
     def snapshot(self) -> dict[str, Any]:
         """Return current statistics."""
         return {
@@ -121,9 +138,38 @@ class ApplicationStatistics:
             "tools_executed": sum(self.tools.values()),
             "average_response_time": round(self.performance.average_response_time, 6),
             "most_frequent_tools": self.tools.most_common(5),
+            "plugins": dict(self.plugins),
+            "repository_scans": sum(self.repositories.values()),
+            "filesystem_searches": sum(self.filesystem_searches.values()),
+            "memory_usage_kb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             "cache": self.cache.stats(),
             "errors": dict(self.errors),
         }
+
+
+@dataclass(slots=True)
+class RuntimeServices:
+    """Shared process-local production services."""
+
+    cache: CacheManager = field(default_factory=CacheManager)
+    statistics: ApplicationStatistics = field(default_factory=ApplicationStatistics)
+    memory: MemoryManager = field(default_factory=MemoryManager)
+
+    def __post_init__(self) -> None:
+        self.statistics.cache = self.cache
+
+
+_RUNTIME = RuntimeServices()
+
+
+def get_runtime() -> RuntimeServices:
+    """Return shared process-local production services."""
+    return _RUNTIME
+
+
+def configure_runtime_memory(memory: MemoryManager) -> None:
+    """Install the configured memory manager into shared runtime services."""
+    _RUNTIME.memory = memory
 
 
 class VersionManager:

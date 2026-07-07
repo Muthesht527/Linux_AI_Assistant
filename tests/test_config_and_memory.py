@@ -35,3 +35,39 @@ def test_preference_manager_round_trip(tmp_path) -> None:
 
     assert manager.preferences.get("editor") == "vim"
     assert manager.preferences.list()["editor"] == "vim"
+
+
+def test_memory_manager_learns_usage(tmp_path) -> None:
+    """Verify persistent memory learns non-sensitive usage signals."""
+    manager = MemoryManager(db_path=tmp_path / "memory.sqlite")
+
+    manager.record_command("project")
+    manager.record_folder(str(tmp_path))
+    manager.record_repository(str(tmp_path))
+    manager.record_language("Python")
+    manager.record_model("qwen3:latest")
+
+    rows = manager.list_memory()["persistent"]
+    keys = {row["key"] for row in rows}
+
+    assert "frequently_used_commands" in keys
+    assert "frequently_accessed_folders" in keys
+    assert "frequently_opened_repositories" in keys
+    assert "preferred_programming_languages" in keys
+    assert manager.preferences.get("preferred_model") == "qwen3:latest"
+
+
+def test_session_memory_tracks_recent_activity(tmp_path) -> None:
+    """Verify session memory stores current process context."""
+    manager = MemoryManager(db_path=tmp_path / "memory.sqlite")
+    manager.session.current_working_directory = str(tmp_path)
+    manager.session.remember_file(str(tmp_path / "README.md"))
+    manager.session.remember_tool("read_file")
+    manager.session.remember_conversation("user", "hello")
+
+    snapshot = manager.session.snapshot()
+
+    assert snapshot["current_working_directory"] == str(tmp_path)
+    assert snapshot["recently_opened_files"] == [str(tmp_path / "README.md")]
+    assert snapshot["recently_executed_tools"] == ["read_file"]
+    assert snapshot["recent_conversations"][0]["content"] == "hello"

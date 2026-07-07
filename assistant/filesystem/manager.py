@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
+from assistant.core.production import get_runtime
 from assistant.filesystem.cache import FilesystemCache
 from assistant.filesystem.config import FilesystemConfiguration
 from assistant.filesystem.indexer import FilesystemIndexer
@@ -40,6 +42,7 @@ class FilesystemManager:
 
     def rebuild_index(self) -> dict[str, Any]:
         """Rebuild the index when explicitly approved."""
+        get_runtime().cache.invalidate()
         return self.indexer.rebuild(self.roots())
 
     def index_status(self) -> dict[str, Any]:
@@ -50,15 +53,47 @@ class FilesystemManager:
 
     def search(self, **kwargs: Any) -> dict[str, Any]:
         """Search indexed files."""
-        return self.searcher.search(**kwargs)
+        started_at = perf_counter()
+        runtime = get_runtime()
+        cache_key = f"filesystem:search:{sorted(kwargs.items())}"
+        cached = runtime.cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+        data = self.searcher.search(**kwargs)
+        runtime.cache.set(cache_key, data)
+        runtime.statistics.record_filesystem_search(str(kwargs))
+        runtime.statistics.performance.record(perf_counter() - started_at)
+        return data
 
     def search_content(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Search inside indexed text files."""
-        return self.searcher.search_content(query, **kwargs)
+        started_at = perf_counter()
+        runtime = get_runtime()
+        cache_key = f"filesystem:content:{query}:{sorted(kwargs.items())}"
+        cached = runtime.cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+        data = self.searcher.search_content(query, **kwargs)
+        runtime.cache.set(cache_key, data)
+        runtime.statistics.record_filesystem_search(query)
+        runtime.statistics.performance.record(perf_counter() - started_at)
+        return data
 
     def read(self, path: str | Path, preview_rows: int = 20) -> dict[str, Any]:
         """Read a supported file."""
-        return self.reader.read(Path(path), preview_rows)
+        runtime = get_runtime()
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"Path does not exist: {resolved}")
+        stat = resolved.stat()
+        cache_key = f"filesystem:read:{resolved}:{stat.st_mtime_ns}:{preview_rows}"
+        cached = runtime.cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+        data = self.reader.read(resolved, preview_rows)
+        runtime.cache.set(cache_key, data)
+        runtime.memory.session.remember_file(str(resolved))
+        return data
 
     def metadata(self, path: str | Path) -> dict[str, Any]:
         """Return cached metadata for a path."""
@@ -75,6 +110,7 @@ class FilesystemManager:
     def list_directory(self, path: str | Path, limit: int = 100) -> dict[str, Any]:
         """List directory entries with basic metadata."""
         resolved = Path(path).expanduser().resolve()
+        get_runtime().memory.record_folder(str(resolved))
         if not resolved.exists():
             raise FileNotFoundError(f"Path does not exist: {resolved}")
         if not resolved.is_dir():

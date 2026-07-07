@@ -1,14 +1,19 @@
 from assistant.core.tool_engine import ToolEngine
+from assistant.core.production import get_runtime
 from assistant.tools.filesystem_tool import FilesystemTool, ReadFileTool
 
 
 def test_tool_engine_executes_registered_tool(tmp_path) -> None:
     """Verify that the tool engine executes a registered filesystem tool."""
+    runtime = get_runtime()
+    runtime.cache.invalidate()
     engine = ToolEngine([FilesystemTool()])
     result = engine.execute("filesystem", path=str(tmp_path))
 
     assert result["path"] == str(tmp_path)
     assert isinstance(result["entries"], list)
+    assert runtime.statistics.snapshot()["tools_executed"] >= 1
+    assert runtime.cache.stats()["entries"] >= 1
 
 
 def test_filesystem_tool_returns_error_for_missing_path(tmp_path) -> None:

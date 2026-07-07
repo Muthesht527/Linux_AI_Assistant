@@ -7,6 +7,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from assistant.core.production import get_runtime
 from assistant.project.config import ProjectConfiguration
 from assistant.project.git import GitRepositoryManager
 from assistant.project.languages import LanguageDetector, ProjectTypeDetector
@@ -69,10 +70,16 @@ class RepositoryAnalyzer:
 
     def analyze(self, path: Path) -> dict[str, Any]:
         """Return a complete read-only repository analysis."""
+        started_at = perf_counter()
+        runtime = get_runtime()
         root = path.expanduser().resolve()
         git_root = self.git.root(root)
         if git_root:
             root = git_root
+        cache_key = f"repository:summary:{root}"
+        cached = runtime.cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
         files = self.scanner.files(root)
         source_summaries = [self._source_summary(file) for file in files[:50]]
         data = {
@@ -87,6 +94,14 @@ class RepositoryAnalyzer:
         }
         if git_root:
             data["git"] = self.git.status(root)
+        runtime.cache.set(cache_key, data)
+        runtime.statistics.record_repository_scan(str(root))
+        runtime.statistics.performance.record(perf_counter() - started_at)
+        runtime.memory.session.current_project = str(root)
+        runtime.memory.session.current_repository = str(root) if git_root else None
+        runtime.memory.record_repository(str(root))
+        for language in data.get("languages", {}):
+            runtime.memory.record_language(str(language))
         return data
 
     def search_symbols(self, path: Path, query: str, kind: str) -> list[dict[str, Any]]:

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from pkgutil import iter_modules
+from typing import Any
 
 from assistant.core.base_tool import BaseTool
 
@@ -22,6 +25,8 @@ class PluginMetadata:
     enabled: bool
     module: str
     valid: bool
+    dependencies: list[str] | None = None
+    missing_dependencies: list[str] | None = None
     error: str | None = None
 
 
@@ -32,9 +37,11 @@ class PluginManager:
         self,
         package_name: str = "assistant.plugins",
         disabled_plugins: list[str] | None = None,
+        state_path: Path | None = None,
     ) -> None:
         self.package_name = package_name
-        self.disabled_plugins = set(disabled_plugins or [])
+        self.state_path = state_path or Path("assistant/cache/plugin_state.json")
+        self.disabled_plugins = set(disabled_plugins or []) | set(self._load_state().get("disabled_plugins", []))
         self.plugins: list[BaseTool] = []
         self.metadata: list[PluginMetadata] = []
         self.errors: list[str] = []
@@ -77,16 +84,24 @@ class PluginManager:
     def disable(self, name: str) -> None:
         """Disable a plugin tool by name for this manager."""
         self.disabled_plugins.add(name)
+        self._save_state()
         for plugin in self.plugins:
             if plugin.name == name:
                 plugin.enabled = False
+        for metadata in self.metadata:
+            if metadata.name == name:
+                metadata.enabled = False
 
     def enable(self, name: str) -> None:
         """Enable a plugin tool by name for this manager."""
         self.disabled_plugins.discard(name)
+        self._save_state()
         for plugin in self.plugins:
             if plugin.name == name:
                 plugin.enabled = True
+        for metadata in self.metadata:
+            if metadata.name == name:
+                metadata.enabled = True
 
     def reload(self) -> list[BaseTool]:
         """Reload plugin discovery."""
@@ -101,7 +116,21 @@ class PluginManager:
             return f"Missing metadata: {', '.join(missing)}"
         if not isinstance(tool.name, str) or not tool.name.strip():
             return "Plugin name must be a non-empty string"
+        missing_dependencies = self.missing_dependencies(tool)
+        if missing_dependencies:
+            return f"Missing dependencies: {', '.join(missing_dependencies)}"
         return None
+
+    def missing_dependencies(self, tool: BaseTool) -> list[str]:
+        """Return missing optional plugin dependencies."""
+        dependencies = getattr(tool, "dependencies", [])
+        if not isinstance(dependencies, list):
+            return ["invalid dependency metadata"]
+        return [
+            dependency
+            for dependency in dependencies
+            if isinstance(dependency, str) and importlib.util.find_spec(dependency) is None
+        ]
 
     def _register_plugin(self, tool_class: type[BaseTool], module_name: str) -> None:
         try:
@@ -111,6 +140,10 @@ class PluginManager:
             self.errors.append(f"{module_name}.{tool_class.__name__}: {exc}")
             return
 
+        dependencies = getattr(tool, "dependencies", [])
+        if not isinstance(dependencies, list):
+            dependencies = []
+        missing_dependencies = self.missing_dependencies(tool)
         tool.enabled = tool.enabled and tool.name not in self.disabled_plugins
         metadata = PluginMetadata(
             name=tool.name,
@@ -121,6 +154,8 @@ class PluginManager:
             enabled=tool.enabled,
             module=module_name,
             valid=error is None,
+            dependencies=dependencies,
+            missing_dependencies=missing_dependencies,
             error=error,
         )
         self.metadata.append(metadata)
@@ -136,3 +171,17 @@ class PluginManager:
             and issubclass(attribute, BaseTool)
             and attribute is not BaseTool
         )
+
+    def _load_state(self) -> dict[str, Any]:
+        if not self.state_path.exists():
+            return {}
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_state(self) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"disabled_plugins": sorted(self.disabled_plugins)}
+        self.state_path.write_text(json.dumps(data, indent=2), encoding="utf-8")

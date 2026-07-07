@@ -30,6 +30,14 @@ class ConfigLoader:
         if not self.config_path.exists():
             return {}
 
+        stat = self.config_path.stat()
+        cache_key = f"config:{self.config_path}:{stat.st_mtime_ns}:{stat.st_size}"
+        from assistant.core.production import get_runtime
+
+        cached = get_runtime().cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+
         try:
             with self.config_path.open("r", encoding=DEFAULT_ENCODING) as handle:
                 loaded = yaml.safe_load(handle) or {}
@@ -40,6 +48,7 @@ class ConfigLoader:
 
         if not isinstance(loaded, dict):
             raise ConfigurationError("Configuration root must be a mapping.")
+        get_runtime().cache.set(cache_key, loaded)
         return loaded
 
     def load_settings(self) -> Settings:
