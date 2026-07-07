@@ -1,5 +1,5 @@
 from assistant.core.tool_engine import ToolEngine
-from assistant.tools.filesystem_tool import FilesystemTool
+from assistant.tools.filesystem_tool import FilesystemTool, ReadFileTool
 
 
 def test_tool_engine_executes_registered_tool(tmp_path) -> None:
@@ -19,3 +19,13 @@ def test_filesystem_tool_returns_error_for_missing_path(tmp_path) -> None:
 
     assert result["path"] == str(tmp_path / "missing")
     assert "error" in result
+
+
+def test_read_file_tool_returns_friendly_errors(tmp_path) -> None:
+    """Verify read tool reports missing paths as structured errors."""
+    tool = ReadFileTool()
+
+    result = tool.execute(path=str(tmp_path / "missing.txt"))
+
+    assert result.success is False
+    assert "error" in result.data

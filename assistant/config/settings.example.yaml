@@ -26,3 +26,34 @@ dependencies:
     - pydantic
     - typer
     - rich
+
+conversation:
+  base_url: http://localhost:11434
+  default_model: qwen3
+  system_prompt: "You are Linux AI Assistant, a helpful local assistant running completely on this machine."
+  temperature: 0.7
+  top_p: 0.9
+  context_size: 4096
+  max_history: 20
+  history_enabled: true
+  streaming_enabled: true
+  request_timeout: 60
+
+filesystem:
+  indexed_paths: []
+  ignored_folders:
+    - .git
+    - .venv
+    - __pycache__
+    - node_modules
+    - .cache
+    - Trash
+  ignored_extensions: []
+  maximum_file_size: 10485760
+  cache_size: 256
+  index_location: assistant/cache/filesystem_index.sqlite3
+  disabled_locations: []
+  include_root: true
+  include_home: true
+  include_mnt: true
+  include_media: true
