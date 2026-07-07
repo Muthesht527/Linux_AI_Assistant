@@ -5,8 +5,6 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 from pkgutil import iter_modules
-from typing import Any
-
 from assistant.core.base_tool import BaseTool
 
 

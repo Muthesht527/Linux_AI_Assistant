@@ -1,4 +1,4 @@
-"""Entry point for the local Linux AI assistant."""
+"""Executable entry point for the local Linux AI assistant."""
 
 from assistant.ui.cli import run_cli
 
