@@ -1,7 +1,7 @@
 [project]
 name = "linux-ai-assistant"
-version = "0.1.0"
-description = "A local Linux AI assistant"
+version = "1.0.0"
+description = "A local production-ready Linux AI assistant"
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2.0.0",

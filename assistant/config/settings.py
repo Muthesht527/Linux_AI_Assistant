@@ -175,6 +175,92 @@ class TerminalSettings(BaseModel):
     default_working_directory: Path = Path.cwd()
 
 
+class DiagnosticsSettings(BaseModel):
+    """Read-only Linux diagnostics settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_processes: int = Field(default=10, ge=1)
+    journal_lines: int = Field(default=100, ge=1)
+    timeout: int = Field(default=5, ge=1)
+    ignored_services: list[str] = Field(default_factory=list)
+    ignored_devices: list[str] = Field(default_factory=list)
+
+
+class ProjectSettings(BaseModel):
+    """Read-only project and repository analysis settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    ignored_folders: list[str] = Field(
+        default_factory=lambda: [
+            ".git",
+            ".venv",
+            "__pycache__",
+            "node_modules",
+            ".cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            "dist",
+            "build",
+        ]
+    )
+    ignored_languages: list[str] = Field(default_factory=list)
+    maximum_repository_size: int = Field(default=524_288_000, ge=1)
+    maximum_file_size: int = Field(default=1_048_576, ge=1)
+    maximum_files_analyzed: int = Field(default=500, ge=1)
+    git_history_depth: int = Field(default=10, ge=1)
+
+
+class MemorySettings(BaseModel):
+    """Session and persistent memory settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    database_path: Path = Path("assistant/memory/assistant_memory.sqlite")
+    max_recent_items: int = Field(default=25, ge=1)
+    max_conversation_items: int = Field(default=50, ge=1)
+    sensitive_keys: list[str] = Field(
+        default_factory=lambda: ["password", "token", "secret", "key", "credential"]
+    )
+
+
+class CacheSettings(BaseModel):
+    """Application cache settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_entries: int = Field(default=256, ge=1)
+    ttl_seconds: int = Field(default=300, ge=1)
+
+
+class PluginSettings(BaseModel):
+    """Plugin discovery and enablement settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    locations: list[Path] = Field(default_factory=lambda: [Path("assistant/plugins")])
+    enabled_plugins: list[str] = Field(default_factory=list)
+    disabled_plugins: list[str] = Field(default_factory=list)
+
+
+class UISettings(BaseModel):
+    """Rich terminal UI settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    theme: str = "default"
+    history_length: int = Field(default=100, ge=1)
+
+
+class StatisticsSettings(BaseModel):
+    """Application statistics retention settings."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    retention_days: int = Field(default=30, ge=1)
+
+
 class Settings(BaseModel):
     """Complete application settings loaded from YAML."""
 
@@ -188,6 +274,13 @@ class Settings(BaseModel):
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
     filesystem: FilesystemSettings = Field(default_factory=FilesystemSettings)
     terminal: TerminalSettings = Field(default_factory=TerminalSettings)
+    diagnostics: DiagnosticsSettings = Field(default_factory=DiagnosticsSettings)
+    project: ProjectSettings = Field(default_factory=ProjectSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
+    cache: CacheSettings = Field(default_factory=CacheSettings)
+    plugins: PluginSettings = Field(default_factory=PluginSettings)
+    ui: UISettings = Field(default_factory=UISettings)
+    statistics: StatisticsSettings = Field(default_factory=StatisticsSettings)
 
 
 def settings_from_mapping(data: dict[str, Any]) -> Settings:

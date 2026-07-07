@@ -6,7 +6,7 @@ import logging
 from time import perf_counter
 from typing import Any
 
-from assistant.core.base_tool import BaseTool
+from assistant.core.base_tool import BaseTool, ToolResult
 
 
 class EchoTool(BaseTool):
@@ -14,27 +14,38 @@ class EchoTool(BaseTool):
 
     name = "echo"
     description = "Echo a message back to the user."
+    category = "utility"
+    version = "1.0.0"
+    author = "Linux AI Assistant"
     permission_level = "SAFE"
     timeout = 5
+    enabled = True
+    parameter_schema = {
+        "type": "object",
+        "properties": {"message": {"type": "string"}},
+        "required": ["message"],
+    }
+    result_schema = {
+        "type": "object",
+        "properties": {"result": {"type": "string"}},
+    }
 
-    def schema(self) -> dict[str, Any]:
-        """Return the argument schema for the echo tool."""
-        return {
-            "type": "object",
-            "properties": {"message": {"type": "string"}},
-            "required": ["message"],
-        }
-
-    def execute(self, **kwargs: Any) -> dict[str, Any]:
+    def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the echo operation and log the structured result."""
         started_at = perf_counter()
         message = kwargs.get("message", "")
-        result = {"result": f"Echo: {message}"}
+        data = {"result": f"Echo: {message}"}
+        result = self.result(
+            success=True,
+            message="Echo completed",
+            data=data,
+            started_at=started_at,
+        )
         logging.getLogger(__name__).info(
             "tool=%s elapsed=%.6f args=%s result=%s",
             self.name,
-            perf_counter() - started_at,
+            result.execution_time,
             {"message": message},
-            result,
+            data,
         )
         return result

@@ -6,7 +6,7 @@ import logging
 from time import perf_counter
 from typing import Any
 
-from assistant.core.base_tool import BaseTool
+from assistant.core.base_tool import BaseTool, ToolResult
 
 
 class ExampleTool(BaseTool):
@@ -14,23 +14,37 @@ class ExampleTool(BaseTool):
 
     name = "example"
     description = "Example plugin tool"
+    category = "plugin"
+    version = "1.0.0"
+    author = "Linux AI Assistant"
     permission_level = "SAFE"
     timeout = 5
+    enabled = True
+    parameter_schema = {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+    }
+    result_schema = {
+        "type": "object",
+        "properties": {"result": {"type": "string"}},
+    }
 
-    def schema(self) -> dict[str, Any]:
-        """Return the argument schema for the example plugin tool."""
-        return {"type": "object", "properties": {"value": {"type": "string"}}}
-
-    def execute(self, **kwargs: Any) -> dict[str, Any]:
+    def execute(self, **kwargs: Any) -> ToolResult:
         """Execute the example plugin tool and log its result."""
         started_at = perf_counter()
         value = kwargs.get("value", "")
-        result = {"result": f"Example plugin received: {value}"}
+        data = {"result": f"Example plugin received: {value}"}
+        result = self.result(
+            success=True,
+            message="Example plugin completed",
+            data=data,
+            started_at=started_at,
+        )
         logging.getLogger(__name__).info(
             "tool=%s elapsed=%.6f args=%s result=%s",
             self.name,
-            perf_counter() - started_at,
+            result.execution_time,
             {"value": value},
-            result,
+            data,
         )
         return result

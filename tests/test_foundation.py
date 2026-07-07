@@ -42,3 +42,12 @@ def test_cli_info_command_succeeds() -> None:
 
     assert result.exit_code == 0
     assert "Linux AI Assistant" in result.output
+
+
+def test_cli_phase_eight_commands_succeed() -> None:
+    """Verify production release commands are available."""
+    runner = CliRunner()
+
+    for command in ("version", "plugins", "memory", "stats", "release"):
+        result = runner.invoke(app, [command])
+        assert result.exit_code == 0

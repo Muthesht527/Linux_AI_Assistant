@@ -1,6 +1,6 @@
 application:
   name: Linux AI Assistant
-  version: 0.1.0
+  version: 1.0.0
 
 runtime:
   python_min_version: "3.12"
@@ -115,3 +115,55 @@ terminal:
   max_output_bytes: 20000
   history_limit: 100
   default_working_directory: .
+
+diagnostics:
+  max_processes: 10
+  journal_lines: 100
+  timeout: 5
+  ignored_services: []
+  ignored_devices: []
+
+project:
+  ignored_folders:
+    - .git
+    - .venv
+    - __pycache__
+    - node_modules
+    - .cache
+    - .pytest_cache
+    - .ruff_cache
+    - dist
+    - build
+  ignored_languages: []
+  maximum_repository_size: 524288000
+  maximum_file_size: 1048576
+  maximum_files_analyzed: 500
+  git_history_depth: 10
+
+memory:
+  database_path: assistant/memory/assistant_memory.sqlite
+  max_recent_items: 25
+  max_conversation_items: 50
+  sensitive_keys:
+    - password
+    - token
+    - secret
+    - key
+    - credential
+
+cache:
+  max_entries: 256
+  ttl_seconds: 300
+
+plugins:
+  locations:
+    - assistant/plugins
+  enabled_plugins: []
+  disabled_plugins: []
+
+ui:
+  theme: default
+  history_length: 100
+
+statistics:
+  retention_days: 30

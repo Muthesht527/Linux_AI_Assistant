@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import typer
@@ -13,7 +14,12 @@ from assistant.core.bootstrap import build_startup_context, startup_banner
 from assistant.core.conversation_manager import ConversationManager
 from assistant.core.constants import APP_VERSION
 from assistant.core.exceptions import AssistantError
+from assistant.core.production import ApplicationStatistics, ReleaseManager, VersionManager
+from assistant.diagnostics import DiagnosticsConfiguration, DiagnosticsManager
 from assistant.filesystem import FilesystemConfiguration, FilesystemManager
+from assistant.memory import MemoryManager
+from assistant.plugins import PluginManager
+from assistant.project import ErrorAnalyzer, GitRepositoryManager, ProjectConfiguration, RepositoryAnalyzer
 from assistant.utils.dependencies import check_dependencies
 from assistant.utils.environment import detect_environment
 
@@ -23,6 +29,7 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 console = Console()
+statistics = ApplicationStatistics()
 
 
 def _build_conversation_manager() -> ConversationManager:
@@ -36,6 +43,42 @@ def _build_filesystem_manager() -> FilesystemManager:
     settings = ConfigLoader().load_settings()
     configuration = FilesystemConfiguration(**settings.filesystem.model_dump())
     return FilesystemManager(configuration)
+
+
+def _build_diagnostics_manager() -> DiagnosticsManager:
+    settings = ConfigLoader().load_settings()
+    configuration = DiagnosticsConfiguration(**settings.diagnostics.model_dump())
+    return DiagnosticsManager(configuration)
+
+
+def _build_repository_analyzer() -> RepositoryAnalyzer:
+    """Create a configured repository analyzer."""
+    settings = ConfigLoader().load_settings()
+    configuration = ProjectConfiguration(**settings.project.model_dump())
+    return RepositoryAnalyzer(configuration)
+
+
+def _build_git_manager() -> GitRepositoryManager:
+    """Create a configured read-only Git manager."""
+    settings = ConfigLoader().load_settings()
+    configuration = ProjectConfiguration(**settings.project.model_dump())
+    return GitRepositoryManager(configuration)
+
+
+def _build_memory_manager() -> MemoryManager:
+    """Create a configured memory manager."""
+    settings = ConfigLoader().load_settings()
+    return MemoryManager(
+        db_path=settings.memory.database_path,
+        max_recent_items=settings.memory.max_recent_items,
+        sensitive_keys=settings.memory.sensitive_keys,
+    )
+
+
+def _build_plugin_manager() -> PluginManager:
+    """Create a configured plugin manager."""
+    settings = ConfigLoader().load_settings()
+    return PluginManager(disabled_plugins=settings.plugins.disabled_plugins)
 
 
 def _version_callback(value: bool) -> None:
@@ -240,6 +283,175 @@ def read(
 
 
 @app.command()
+def project(
+    command: str = typer.Argument("summary", help="Project command: summary."),
+    path: Path = typer.Argument(Path("."), help="Project path."),
+) -> None:
+    """Inspect a local project without changing files."""
+    if command not in {"summary", "/project", "/project summary"}:
+        console.print("[red]Unknown project command. Use summary.[/red]")
+        raise typer.Exit(code=1)
+    _print_project_summary(_build_repository_analyzer().analyze(path))
+
+
+@app.command(name="git")
+def git_command(
+    command: str = typer.Argument("status", help="Git command: status, history, or diff."),
+    path: Path = typer.Argument(Path("."), help="Repository path."),
+) -> None:
+    """Inspect Git repositories without modifying history or remotes."""
+    manager = _build_git_manager()
+    if command in {"status", "/git status"}:
+        _print_git_status(manager.status(path))
+        return
+    if command in {"history", "/git history"}:
+        _print_git_history(manager.history(path))
+        return
+    if command in {"diff", "/git diff"}:
+        _print_git_diff(manager.diff(path))
+        return
+    console.print("[red]Unknown git command. Use status, history, or diff.[/red]")
+    raise typer.Exit(code=1)
+
+
+@app.command()
+def readme(path: Path = typer.Argument(Path("."), help="Project path.")) -> None:
+    """Read and summarize README documentation."""
+    _print_readme(_build_repository_analyzer().docs.read(path))
+
+
+@app.command()
+def todos(path: Path = typer.Argument(Path("."), help="Project path.")) -> None:
+    """List TODO and FIXME comments."""
+    _print_rows(_build_repository_analyzer().search_symbols(path, "", "todo"), "TODOs")
+
+
+@app.command(name="explain-error")
+def explain_error(text: list[str] = typer.Argument(..., help="Error or stack trace text.")) -> None:
+    """Explain a compiler error, runtime error, or stack trace."""
+    _print_error_analysis(ErrorAnalyzer().analyze(" ".join(text)))
+
+
+@app.command(name="memory")
+def memory_command(
+    command: str = typer.Argument("list", help="Memory command: list, clear, export, import."),
+    path: Path | None = typer.Argument(None, help="Path for export or import."),
+) -> None:
+    """Inspect or manage local assistant memory."""
+    manager = _build_memory_manager()
+    if command in {"list", "/memory", "/memory list"}:
+        _print_memory(manager.list_memory())
+        return
+    if command in {"clear", "/memory clear"}:
+        manager.clear(include_persistent=True)
+        console.print("[green]Memory cleared.[/green]")
+        return
+    if command in {"export", "/memory export"}:
+        if path is None:
+            console.print("[red]Provide an export path.[/red]")
+            raise typer.Exit(code=1)
+        path.write_text(json.dumps(manager.export(), indent=2), encoding="utf-8")
+        console.print(f"[green]Memory exported to {path}.[/green]")
+        return
+    if command in {"import", "/memory import"}:
+        if path is None:
+            console.print("[red]Provide an import path.[/red]")
+            raise typer.Exit(code=1)
+        manager.import_data(json.loads(path.read_text(encoding="utf-8")))
+        console.print(f"[green]Memory imported from {path}.[/green]")
+        return
+    console.print("[red]Unknown memory command. Use list, clear, export, or import.[/red]")
+    raise typer.Exit(code=1)
+
+
+@app.command(name="preferences")
+def preferences_command(
+    command: str = typer.Argument("list", help="Preference command: list, set, get, reset."),
+    key: str | None = typer.Argument(None, help="Preference key."),
+    value: str | None = typer.Argument(None, help="Preference value for set."),
+) -> None:
+    """Inspect or manage local user preferences."""
+    preferences = _build_memory_manager().preferences
+    if command in {"list", "/preferences"}:
+        _print_mapping("Preferences", preferences.list())
+        return
+    if command == "get":
+        if key is None:
+            console.print("[red]Provide a preference key.[/red]")
+            raise typer.Exit(code=1)
+        console.print(preferences.get(key, ""))
+        return
+    if command == "set":
+        if key is None or value is None:
+            console.print("[red]Provide a preference key and value.[/red]")
+            raise typer.Exit(code=1)
+        preferences.set(key, value)
+        console.print(f"[green]Preference saved: {key}[/green]")
+        return
+    if command in {"reset", "/preferences reset"}:
+        preferences.reset()
+        console.print("[green]Preferences reset.[/green]")
+        return
+    console.print("[red]Unknown preferences command. Use list, get, set, or reset.[/red]")
+    raise typer.Exit(code=1)
+
+
+@app.command(name="plugins")
+def plugins_command(
+    command: str = typer.Argument("list", help="Plugin command: list or reload."),
+) -> None:
+    """Inspect auto-discovered plugins."""
+    manager = _build_plugin_manager()
+    if command in {"list", "/plugins", "/plugins list"}:
+        _print_plugins(manager.list_metadata())
+        return
+    if command in {"reload", "/plugins reload"}:
+        manager.reload()
+        console.print("[green]Plugins reloaded.[/green]")
+        _print_plugins(manager.list_metadata())
+        return
+    console.print("[red]Unknown plugin command. Use list or reload.[/red]")
+    raise typer.Exit(code=1)
+
+
+@app.command(name="stats")
+def stats_command() -> None:
+    """Show process-local application statistics."""
+    _print_mapping("Application Statistics", statistics.snapshot())
+
+
+@app.command(name="about")
+def about_command() -> None:
+    """Show release information."""
+    settings = ConfigLoader().load_settings()
+    console.print(f"{settings.application.name} {settings.application.version}")
+    console.print("Local Linux assistant with chat, tools, filesystem, diagnostics, coding, Git, memory, and plugins.")
+
+
+@app.command(name="version")
+def version_command() -> None:
+    """Show application version."""
+    info = VersionManager().info()
+    console.print(f"{info['name']} {info['version']}")
+
+
+@app.command(name="license")
+def license_command() -> None:
+    """Show project license text."""
+    path = Path("LICENSE")
+    if not path.exists():
+        console.print("[yellow]LICENSE file not found.[/yellow]")
+        raise typer.Exit(code=1)
+    console.print(path.read_text(encoding="utf-8"))
+
+
+@app.command(name="release")
+def release_command() -> None:
+    """Check release packaging readiness."""
+    _print_mapping("Release Readiness", ReleaseManager(Path.cwd()).check())
+
+
+@app.command()
 def index(
     command: str = typer.Argument("status", help="Index command: status or rebuild."),
     yes: bool = typer.Option(False, "--yes", help="Confirm index rebuild."),
@@ -261,13 +473,77 @@ def index(
     raise typer.Exit(code=1)
 
 
+def _make_diagnostics_command(action: str):
+    def command() -> None:
+        _print_diagnostics(getattr(_build_diagnostics_manager(), action)())
+
+    command.__name__ = action
+    command.__doc__ = f"Show read-only {action} diagnostics."
+    return command
+
+
+for _diagnostics_action in (
+    "system", "cpu", "memory", "disk", "processes",
+    "services", "kernel", "network", "hardware",
+):
+    app.command(name=_diagnostics_action)(_make_diagnostics_command(_diagnostics_action))
+
+
 def _handle_chat_command(manager: ConversationManager, user_input: str) -> bool:
     """Handle slash commands inside the chat loop."""
     if user_input in {"/exit", "exit", "quit"}:
         raise typer.Exit()
+    statistics.record_command(user_input.split(" ", 1)[0])
     if user_input in {"/reset", "/clear", "clear history"}:
         manager.reset()
         console.print("[green]Conversation history cleared.[/green]")
+        return True
+    if user_input in {"/help", "help"}:
+        console.print("Commands: /models, /files, /search, /read, /project, /git status, /memory, /preferences, /plugins, /stats, /about, /version, /license, /exit")
+        return True
+    if user_input in {"/memory", "/memory list"}:
+        _print_memory(_build_memory_manager().list_memory())
+        return True
+    if user_input == "/memory clear":
+        _build_memory_manager().clear(include_persistent=True)
+        console.print("[green]Memory cleared.[/green]")
+        return True
+    if user_input.startswith("/memory export "):
+        path = Path(user_input.removeprefix("/memory export ").strip())
+        path.write_text(json.dumps(_build_memory_manager().export(), indent=2), encoding="utf-8")
+        console.print(f"[green]Memory exported to {path}.[/green]")
+        return True
+    if user_input.startswith("/memory import "):
+        path = Path(user_input.removeprefix("/memory import ").strip())
+        _build_memory_manager().import_data(json.loads(path.read_text(encoding="utf-8")))
+        console.print(f"[green]Memory imported from {path}.[/green]")
+        return True
+    if user_input in {"/preferences", "/preferences list"}:
+        _print_mapping("Preferences", _build_memory_manager().preferences.list())
+        return True
+    if user_input == "/preferences reset":
+        _build_memory_manager().preferences.reset()
+        console.print("[green]Preferences reset.[/green]")
+        return True
+    if user_input in {"/plugins", "/plugins list"}:
+        _print_plugins(_build_plugin_manager().list_metadata())
+        return True
+    if user_input == "/plugins reload":
+        plugin_manager = _build_plugin_manager()
+        plugin_manager.reload()
+        _print_plugins(plugin_manager.list_metadata())
+        return True
+    if user_input == "/stats":
+        _print_mapping("Application Statistics", statistics.snapshot())
+        return True
+    if user_input == "/about":
+        about_command()
+        return True
+    if user_input == "/version":
+        version_command()
+        return True
+    if user_input == "/license":
+        license_command()
         return True
     if user_input in {"/models", "/model", "/model list"}:
         _print_models(manager)
@@ -288,6 +564,18 @@ def _handle_chat_command(manager: ConversationManager, user_input: str) -> bool:
         path = user_input.removeprefix("/files").strip() or "."
         _print_directory_listing(_build_filesystem_manager().list_directory(path, 50))
         return True
+    if user_input.startswith("/search code "):
+        query = user_input.removeprefix("/search code ").strip()
+        _print_rows(_build_repository_analyzer().search_symbols(Path("."), query, "code"), "Code Search")
+        return True
+    if user_input.startswith("/search function "):
+        query = user_input.removeprefix("/search function ").strip()
+        _print_rows(_build_repository_analyzer().search_symbols(Path("."), query, "function"), "Function Search")
+        return True
+    if user_input.startswith("/search class "):
+        query = user_input.removeprefix("/search class ").strip()
+        _print_rows(_build_repository_analyzer().search_symbols(Path("."), query, "class"), "Class Search")
+        return True
     if user_input.startswith("/search "):
         query = user_input.removeprefix("/search ").strip()
         _print_search_results(_build_filesystem_manager().search(partial=query, limit=50))
@@ -296,12 +584,49 @@ def _handle_chat_command(manager: ConversationManager, user_input: str) -> bool:
         path = user_input.removeprefix("/read ").strip()
         _print_read_result(_build_filesystem_manager().read(path))
         return True
+    if user_input in {"/project", "/project summary"}:
+        _print_project_summary(_build_repository_analyzer().analyze(Path(".")))
+        return True
+    if user_input == "/git status":
+        _print_git_status(_build_git_manager().status(Path(".")))
+        return True
+    if user_input == "/git history":
+        _print_git_history(_build_git_manager().history(Path(".")))
+        return True
+    if user_input == "/git diff":
+        _print_git_diff(_build_git_manager().diff(Path(".")))
+        return True
+    if user_input == "/readme":
+        _print_readme(_build_repository_analyzer().docs.read(Path(".")))
+        return True
+    if user_input == "/todos":
+        _print_rows(_build_repository_analyzer().search_symbols(Path("."), "", "todo"), "TODOs")
+        return True
+    if user_input.startswith("/explain error "):
+        text = user_input.removeprefix("/explain error ").strip()
+        _print_error_analysis(ErrorAnalyzer().analyze(text))
+        return True
     if user_input == "/index status":
         _print_index_status(_build_filesystem_manager().index_status())
         return True
     if user_input == "/index rebuild":
         data = _build_filesystem_manager().rebuild_index()
         console.print(f"[green]Indexed {data['indexed']} files.[/green]")
+        return True
+    diagnostics_commands = {
+        "/system": "system",
+        "/cpu": "cpu",
+        "/memory-info": "memory",
+        "/disk": "disk",
+        "/processes": "processes",
+        "/services": "services",
+        "/kernel": "kernel",
+        "/network": "network",
+        "/hardware": "hardware",
+    }
+    if user_input in diagnostics_commands:
+        diagnostics = _build_diagnostics_manager()
+        _print_diagnostics(getattr(diagnostics, diagnostics_commands[user_input])())
         return True
     return False
 
@@ -403,6 +728,154 @@ def _print_index_status(data: dict[str, object]) -> None:
         console.print("Roots:")
         for root in roots:
             console.print(f"  {root}")
+
+
+def _print_diagnostics(result: dict[str, object]) -> None:
+    """Render diagnostics output."""
+    title = str(result.get("name", "diagnostics")).replace("_", " ").title()
+    if not result.get("success", False):
+        console.print(f"[red]{title} failed:[/red] {result.get('error')}")
+        return
+    data = result.get("data", {})
+    if isinstance(data, dict):
+        table = Table(title=title)
+        table.add_column("Field")
+        table.add_column("Value")
+        for key, value in data.items():
+            table.add_row(str(key), _compact_value(value))
+        console.print(table)
+        return
+    console.print(data)
+
+
+def _print_project_summary(data: dict[str, object]) -> None:
+    """Render a repository summary."""
+    console.print(f"Project: {data.get('root')}")
+    console.print(f"Git: {data.get('is_git_repository')}")
+    console.print(f"Types: {_compact_value(data.get('project_types', []))}")
+    console.print(f"Languages: {_compact_value(data.get('languages', {}))}")
+    console.print(f"Files analyzed: {data.get('files_analyzed', 0)}")
+
+
+def _print_git_status(data: dict[str, object]) -> None:
+    """Render Git status."""
+    console.print(f"Repository: {data.get('repository_root')}")
+    console.print(f"Branch: {data.get('current_branch')}")
+    console.print(f"Clean: {data.get('clean')}")
+    console.print(f"Changed: {_compact_value(data.get('changed_files', []))}")
+    console.print(f"Untracked: {_compact_value(data.get('untracked_files', []))}")
+
+
+def _print_git_history(data: dict[str, object]) -> None:
+    """Render recent Git history."""
+    table = Table(title="Git History")
+    table.add_column("Hash")
+    table.add_column("Date")
+    table.add_column("Subject")
+    for commit in data.get("commits", []):
+        if isinstance(commit, dict):
+            table.add_row(str(commit.get("hash", "")), str(commit.get("date", "")), str(commit.get("subject", "")))
+    console.print(table)
+
+
+def _print_git_diff(data: dict[str, object]) -> None:
+    """Render Git diff summary."""
+    console.print(f"Repository: {data.get('repository_root')}")
+    console.print(data.get("diff_stat") or "No unstaged diff.")
+
+
+def _print_readme(data: dict[str, object]) -> None:
+    """Render README summary."""
+    if not data.get("found"):
+        console.print("[yellow]No README found.[/yellow]")
+        return
+    console.print(f"README: {data.get('path')}")
+    console.print(data.get("summary", ""))
+
+
+def _print_rows(rows: list[dict[str, object]], title: str) -> None:
+    """Render generic source search rows."""
+    table = Table(title=title)
+    table.add_column("Path")
+    table.add_column("Line")
+    table.add_column("Text")
+    for row in rows:
+        table.add_row(str(row.get("path", "")), str(row.get("line", "")), str(row.get("text", row.get("name", ""))))
+    console.print(table)
+
+
+def _print_error_analysis(data: dict[str, object]) -> None:
+    """Render parsed stack trace details."""
+    console.print(f"Message: {data.get('message', '')}")
+    console.print(f"Explanation: {data.get('explanation', '')}")
+    console.print(f"Root cause: {data.get('root_cause', '')}")
+
+
+def _print_memory(data: dict[str, object]) -> None:
+    """Render memory state."""
+    session = data.get("session", {})
+    persistent = data.get("persistent", [])
+    if isinstance(session, dict):
+        _print_mapping("Session Memory", session)
+    table = Table(title="Persistent Memory")
+    table.add_column("Namespace")
+    table.add_column("Key")
+    table.add_column("Value")
+    table.add_column("Updated")
+    if isinstance(persistent, list):
+        for row in persistent:
+            if isinstance(row, dict):
+                table.add_row(
+                    str(row.get("namespace", "")),
+                    str(row.get("key", "")),
+                    _compact_value(row.get("value")),
+                    str(row.get("updated_at", "")),
+                )
+    console.print(table)
+
+
+def _print_plugins(plugins: list[object]) -> None:
+    """Render plugin metadata."""
+    table = Table(title="Plugins")
+    table.add_column("Name")
+    table.add_column("Version")
+    table.add_column("Enabled")
+    table.add_column("Valid")
+    table.add_column("Module")
+    for plugin in plugins:
+        table.add_row(
+            str(getattr(plugin, "name", "")),
+            str(getattr(plugin, "version", "")),
+            str(getattr(plugin, "enabled", "")),
+            str(getattr(plugin, "valid", "")),
+            str(getattr(plugin, "module", "")),
+        )
+    console.print(table)
+
+
+def _print_mapping(title: str, data: dict[str, object]) -> None:
+    """Render a mapping as a two-column table."""
+    table = Table(title=title)
+    table.add_column("Field")
+    table.add_column("Value")
+    for key, value in data.items():
+        table.add_row(str(key), _compact_value(value))
+    console.print(table)
+
+
+def _compact_value(value: object) -> str:
+    """Format nested diagnostics values for compact CLI display."""
+    if isinstance(value, list):
+        if not value:
+            return "[]"
+        preview = ", ".join(str(item) for item in value[:5])
+        suffix = "" if len(value) <= 5 else f" ... ({len(value)} total)"
+        return preview + suffix
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        return ", ".join(f"{key}={_compact_value(item)}" for key, item in value.items())
+    return "-" if value is None else str(value)
 
 
 def _format_size(size: int | None) -> str:
