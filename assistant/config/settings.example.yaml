@@ -57,3 +57,61 @@ filesystem:
   include_home: true
   include_mnt: true
   include_media: true
+
+terminal:
+  allowed_commands:
+    - pwd
+    - ls
+    - lsblk
+    - whoami
+    - hostname
+    - uname
+    - date
+    - free
+    - df
+    - du
+    - tree
+    - find
+    - grep
+    - cat
+    - head
+    - tail
+    - wc
+    - echo
+    - which
+    - whereis
+    - file
+    - stat
+    - id
+    - uptime
+    - env
+    - printenv
+  blocked_commands:
+    - sudo
+    - su
+    - rm
+    - dd
+    - mkfs
+    - fdisk
+    - shutdown
+    - reboot
+    - poweroff
+    - halt
+    - killall
+    - chmod
+    - chown
+    - systemctl
+    - journalctl
+    - apt
+    - snap
+    - flatpak
+    - mount
+    - umount
+    - curl
+    - wget
+    - ssh
+  default_timeout: 5
+  max_timeout: 15
+  max_output_bytes: 20000
+  history_limit: 100
+  default_working_directory: .
