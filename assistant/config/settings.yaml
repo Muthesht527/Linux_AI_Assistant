@@ -1,0 +1,5 @@
+assistant:
+  name: Linux AI Assistant
+  model: qwen3
+  ollama_url: http://localhost:11434
+  log_level: INFO
