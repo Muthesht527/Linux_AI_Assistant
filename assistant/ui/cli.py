@@ -16,12 +16,14 @@ from assistant.core.bootstrap import build_startup_context, startup_banner
 from assistant.core.conversation_manager import ConversationManager
 from assistant.core.constants import APP_VERSION
 from assistant.core.exceptions import AssistantError
+from assistant.core.orchestrator import ConversationOrchestrator
 from assistant.core.production import (
     ReleaseManager,
     VersionManager,
     configure_runtime_memory,
     get_runtime,
 )
+from assistant.core.tool_engine import ToolEngine
 from assistant.diagnostics import DiagnosticsConfiguration, DiagnosticsManager
 from assistant.filesystem import FilesystemConfiguration, FilesystemManager
 from assistant.memory import MemoryManager
@@ -42,7 +44,15 @@ _memory_configured = False
 def _build_conversation_manager() -> ConversationManager:
     """Create a configured local conversation manager."""
     settings = ConfigLoader().load_settings()
-    manager = ConversationManager(settings.conversation)
+    tool_engine = ToolEngine()
+    tool_engine.load_package("assistant.tools")
+    for plugin in _build_plugin_manager().discover():
+        if tool_engine.registry.find(plugin.name) is None:
+            tool_engine.register(plugin)
+    manager = ConversationManager(
+        settings.conversation,
+        orchestrator=ConversationOrchestrator(tool_engine),
+    )
     memory = _build_memory_manager()
     memory.session.current_model = manager.models.current_model
     memory.record_model(manager.models.current_model)

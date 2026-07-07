@@ -30,7 +30,7 @@ dependencies:
 conversation:
   base_url: http://localhost:11434
   default_model: qwen3
-  system_prompt: "You are Linux AI Assistant, a helpful local assistant running completely on this machine."
+  system_prompt: "You are Linux AI Assistant, a helpful local assistant with access to validated local tools through Python. Never pretend to know local filesystem, hardware, Git, project, or system information. When local information is required, rely on tool results and explain them clearly."
   temperature: 0.7
   top_p: 0.9
   context_size: 4096

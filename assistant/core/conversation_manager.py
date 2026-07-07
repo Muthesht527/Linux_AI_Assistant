@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 
 from assistant.config.settings import ConversationSettings
 from assistant.core.chat_session import ChatSession, TokenUsage
+from assistant.core.orchestrator import ConversationOrchestrator
 from assistant.core.production import get_runtime
 from assistant.models.ollama_model import OllamaModel
 from assistant.models.ollama_model import OllamaModelInfo
@@ -83,6 +84,7 @@ class ConversationManager:
         self,
         settings: ConversationSettings,
         model: OllamaModel | None = None,
+        orchestrator: ConversationOrchestrator | None = None,
     ) -> None:
         self.settings = settings
         self.client = model or OllamaModel(
@@ -93,6 +95,7 @@ class ConversationManager:
         self.models = ModelManager(self.client, settings.default_model)
         self.session = ChatSession(settings)
         self.streaming = StreamingResponseHandler()
+        self.orchestrator = orchestrator
 
     def status(self) -> dict[str, Any]:
         """Return local Ollama availability details."""
@@ -140,6 +143,10 @@ class ConversationManager:
 
     def respond(self, user_input: str) -> ChatResult:
         """Return a complete response for one user prompt."""
+        orchestration = self.orchestrator.run(user_input) if self.orchestrator else None
+        if orchestration is not None:
+            return self._respond_with_tools(user_input, orchestration.final_prompt, orchestration.tool_results)
+
         messages = self.session.build_messages(user_input)
         try:
             result = self.client.chat(
@@ -164,6 +171,12 @@ class ConversationManager:
 
     def stream_response(self, user_input: str) -> Iterator[str]:
         """Stream a response and save it to history when complete."""
+        orchestration = self.orchestrator.run(user_input) if self.orchestrator else None
+        if orchestration is not None:
+            result = self._respond_with_tools(user_input, orchestration.final_prompt, orchestration.tool_results)
+            yield result.error or result.response
+            return
+
         messages = self.session.build_messages(user_input)
         collected: list[str] = []
         try:
@@ -184,6 +197,38 @@ class ConversationManager:
         runtime = get_runtime()
         runtime.memory.session.remember_conversation("user", user_input)
         runtime.memory.session.remember_conversation("assistant", "".join(collected))
+
+    def _respond_with_tools(
+        self,
+        user_input: str,
+        tool_prompt: str,
+        tool_results: list[Any],
+    ) -> ChatResult:
+        """Generate the final answer after local tool execution."""
+        messages = self.session.build_messages(tool_prompt)
+        try:
+            result = self.client.chat(
+                messages,
+                temperature=self.settings.temperature,
+                top_p=self.settings.top_p,
+                context_size=self.settings.context_size,
+            )
+            response = str(result.get("response", ""))
+        except (OSError, URLError, HTTPError, ValueError) as exc:
+            if self.orchestrator is not None:
+                response = self.orchestrator.formatter.fallback(user_input, tool_results)
+            else:
+                return self._error_result(user_input, f"Ollama chat failed: {exc}")
+
+        self.session.remember_exchange(user_input, response)
+        runtime = get_runtime()
+        runtime.memory.session.remember_conversation("user", user_input)
+        runtime.memory.session.remember_conversation("assistant", response)
+        return ChatResult(
+            model=self.client.model,
+            response=response,
+            usage=self.session.estimate_usage(user_input, response),
+        )
 
     def _error_result(self, user_input: str, message: str) -> ChatResult:
         """Build a structured failed chat result."""

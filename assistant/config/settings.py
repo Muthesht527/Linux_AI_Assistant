@@ -69,7 +69,12 @@ class ConversationSettings(BaseModel):
 
     base_url: str = "http://localhost:11434"
     default_model: str = "qwen3"
-    system_prompt: str = "You are Linux AI Assistant, a helpful local assistant."
+    system_prompt: str = (
+        "You are Linux AI Assistant, a helpful local assistant with access to "
+        "validated local tools through Python. Never pretend to know local "
+        "filesystem, hardware, Git, project, or system information. When local "
+        "information is required, rely on tool results and explain them clearly."
+    )
     temperature: float = Field(default=0.7, ge=0.0)
     top_p: float = Field(default=0.9, ge=0.0, le=1.0)
     context_size: int = Field(default=4096, ge=1)

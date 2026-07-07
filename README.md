@@ -33,7 +33,7 @@ python3 main.py index status
 python3 main.py index rebuild
 python3 main.py system
 python3 main.py cpu
-python3 main.py memory
+python3 main.py memory-info
 python3 main.py disk
 python3 main.py processes
 python3 main.py services
@@ -61,6 +61,30 @@ python3 main.py release
 Startup validates Python, loads YAML configuration, creates required
 directories, initializes rotating file and console logging, and exits cleanly on
 expected failures.
+
+## Automatic Tool Calling
+
+The normal chat command supports natural-language tool orchestration. Users do
+not need slash commands for local questions. The assistant routes prompts through
+a Tool Decision Engine, executes safe existing Tool Engine tools, appends the
+tool results to the conversation, and asks the local model to explain the
+results naturally.
+
+Examples:
+
+- `What OS am I using?` calls `system_info`.
+- `Why is my RAM usage high?` calls `memory_info`.
+- `Find README.md and summarize it.` calls `search_file`, then `read_file`.
+- `Read README.md` calls `read_file`.
+- `What branch am I on?` calls `git_status`.
+- `Show battery health.` calls `battery_info`.
+- `What USB devices are connected?` calls `usb_info`.
+
+Tool orchestration prefers cached results, then session memory, then fresh tool
+execution. It never bypasses Tool Engine permissions, never executes dangerous
+commands, and never lets the model invent filesystem, hardware, Git, project, or
+system facts. If a tool fails, the assistant explains the failure and offers a
+safe alternative.
 
 ## Structure
 
